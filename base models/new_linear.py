@@ -299,6 +299,7 @@ print("Starting batch run...")
 
 # CHANGE RANGE HERE: (1, 6) runs 1 to 5. Use (1, 41) for all 40.
 for i in range(1, 2):
+    i=41
     fname = f"data\Inst{i}.xlsx"
 
     # Solve
