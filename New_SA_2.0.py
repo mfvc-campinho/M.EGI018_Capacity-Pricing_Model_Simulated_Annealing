@@ -373,7 +373,7 @@ def run_sa_fast_relaxation(instance, max_seconds=120):
     save_result("BestSolution_Reset10SA.xlsx", final_fleet, best_price)
 
 if __name__ == "__main__":
-    INSTANCE = r"Inst41.xlsx"
+    INSTANCE = r"data\\Inst50.xlsx"
     if os.path.exists(INSTANCE):
         run_sa_fast_relaxation(INSTANCE, max_seconds=1200)
     else:
