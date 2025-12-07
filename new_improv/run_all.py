@@ -3,12 +3,10 @@ import time
 import math
 import random
 import copy
-import csv
-import gc  # <--- Added for Garbage Collection
+import gc
 import pandas as pd
 import numpy as np
 from pyomo.environ import *
-from pyomo.solvers.plugins.solvers.gurobi_direct import GurobiDirect
 
 # ==============================================================================
 # 1. SHARED CLASSES
@@ -154,7 +152,6 @@ class PersistentEvaluator:
                         m.v[r,a,p].setub(ub)
                         self.opt.update_var(m.v[r,a,p])
 
-        # Added tee=False to prevent output capturing errors
         res = self.opt.solve(m, save_results=False, load_solutions=False, tee=False)
         
         if res.solver.termination_condition == TerminationCondition.optimal:
@@ -179,7 +176,6 @@ class PersistentEvaluator:
             return -1e9, {}, {}
     
     def close(self):
-        """Explicitly dispose of the persistent solver."""
         try:
             if hasattr(self, 'opt') and self.opt:
                 if hasattr(self.opt, '_solver_model'):
@@ -221,9 +217,9 @@ def saturation_guided_mutation(pricing_in, sales_info, data, aggressiveness=0.3)
         
         if random.random() < aggressiveness:
             original_val = current_p
-            if ratio > 0.99:
+            if ratio > 0.9:
                 if current_p < data.P - 1: new_pricing[(r, a)] = current_p + 1
-            elif ratio > 0.01:
+            elif ratio > 0.1:
                 if current_p < data.P - 1: new_pricing[(r, a)] = current_p + 1     
             else:
                 if current_p > 0: new_pricing[(r, a)] = current_p - 1 
@@ -243,10 +239,25 @@ def run_sa_algorithm(data, evaluator_lp, initial_pricing, max_seconds=120):
     T = None; ALPHA = 0.99; aggressiveness = 0.2
     start_time = time.time()
     total_iter = 0
+    last_print = 0
+    
+    # STOPPING CONDITION VARS
+    no_improve_iters = 0
+    MAX_NO_IMPROVE = 200 # Stop after 1000 iterations without finding a better solution
     
     while True:
         elapsed = time.time() - start_time
         if elapsed >= max_seconds: break
+        
+        # Stop if stuck
+        if no_improve_iters >= MAX_NO_IMPROVE:
+            print(f"    ... SA Stopping Early: No improvement for {no_improve_iters} iterations.")
+            break
+            
+        if int(elapsed) > 0 and int(elapsed) % 30 == 0 and int(elapsed) != last_print:
+            print(f"    ... SA Running: {elapsed:.0f}s / {max_seconds}s | Best: {best_obj_lp:,.0f} | Stagnant: {no_improve_iters}")
+            last_print = int(elapsed)
+
         total_iter += 1
         n_price, moved = saturation_guided_mutation(curr_price, curr_sales, data, aggressiveness)
         if not moved:
@@ -255,17 +266,29 @@ def run_sa_algorithm(data, evaluator_lp, initial_pricing, max_seconds=120):
 
         n_obj, _, n_sales = evaluator_lp.solve_for_pricing(n_price)
         delta = n_obj - curr_obj
+        
         accepted = False
-        if delta > 0: accepted = True
+        if delta > 0: 
+            accepted = True
         else:
-            if T is None: T = 1000 if delta == 0 else delta / math.log(0.5)
+            if T is None:
+                base_T = delta / math.log(0.5) if delta < 0 else 0
+                floor_T = abs(curr_obj) * 0.01
+                T = max(base_T, floor_T)
+                if T <= 1e-9: T = 1.0 
             try: prob = math.exp(delta / T)
             except: prob = 0
             if random.random() < prob: accepted = True
         
         if accepted:
             curr_price = n_price; curr_obj = n_obj; curr_sales = n_sales
-            if curr_obj > best_obj_lp: best_obj_lp = curr_obj
+            if curr_obj > best_obj_lp: 
+                best_obj_lp = curr_obj
+                no_improve_iters = 0 # Reset counter on improvement
+            else:
+                no_improve_iters += 1
+        else:
+            no_improve_iters += 1 # Rejected move counts as no improvement
         
         if T is not None: T = T * ALPHA
         if total_iter % 100 == 0: aggressiveness = max(0.05, aggressiveness * 1)
@@ -290,7 +313,11 @@ def run_ls_algorithm(data, evaluator_lp, initial_pricing, max_iters):
             
     return curr_obj
 
-def run_linear_algorithm(filename, time_limit):
+def run_linear_with_gap(filename, time_limit):
+    """
+    Run the full MIP formulation (with pricing variables q[r,a,p])
+    This is different from PersistentEvaluator which assumes fixed pricing.
+    """
     try:
         xls = pd.ExcelFile(filename)
         def get_clean_matrix(sheet_name):
@@ -342,17 +369,13 @@ def run_linear_algorithm(filename, time_limit):
 
         rental_gr = {r: r_data[r, 4] - 1 for r in range(R)}
         INX_gs = {(g, s): 0.0 for g in range(G) for s in range(S)}
-        ONY_gts = {(g, t, s, 'L'): 0.0 for g in range(G) for t in range(T+1) for s in range(S)}
-        ONY_gts.update({(g, t, s, 'O'): 0.0 for g in range(G) for t in range(T+1) for s in range(S)})
-        ONU_gts = {(g, t, s, 'L'): 0.0 for g in range(G) for t in range(T+1) for s in range(S)}
-        ONU_gts.update({(g, t, s, 'O'): 0.0 for g in range(G) for t in range(T+1) for s in range(S)})
 
         model = ConcreteModel()
         model.G = RangeSet(0, G-1); model.S = RangeSet(0, S-1); model.R = RangeSet(0, R-1)
         model.A = RangeSet(0, A); model.P = RangeSet(0, P-1); model.T = RangeSet(0, T); model.T_minus = RangeSet(0, T-1)
 
         model.w_O = Var(model.G, model.S, domain=NonNegativeIntegers)
-        model.w_L = Var(model.G, model.T_minus, model.S,domain=NonNegativeIntegers)
+        model.w_L = Var(model.G, model.T_minus, model.S, domain=NonNegativeIntegers)
         model.q = Var(model.R, model.A, model.P, domain=Binary)
         model.x_L = Var(model.G, model.T, model.S, domain=NonNegativeIntegers)
         model.x_O = Var(model.G, model.T, model.S, domain=NonNegativeIntegers)
@@ -384,7 +407,7 @@ def run_linear_algorithm(filename, time_limit):
             rout = sum(m.u_O[r, a, g] for r in m.R for a in m.A if r_data[r, 0] == s+1 and r_data[r, 2] == t)
             tin = sum(m.y_O[s2, s, g, t-TT_s1s2[s2, s]] for s2 in m.S if t-TT_s1s2[s2, s] in m.T_minus)
             tout = sum(m.y_O[s, s2, g, t] for s2 in m.S if t in m.T_minus)
-            return m.x_O[g, t, s] == m.x_O[g, t-1, s] + ONY_gts[g, t, s, 'O'] + ONU_gts[g, t, s, 'O'] + rin - rout + tin - tout
+            return m.x_O[g, t, s] == m.x_O[g, t-1, s] + rin - rout + tin - tout
         model.c_stockO = Constraint(model.G, model.T, model.S, rule=stock_O)
 
         def stock_L(m, g, t, s):
@@ -395,11 +418,11 @@ def run_linear_algorithm(filename, time_limit):
             tout = sum(m.y_L[s, s2, g, t] for s2 in m.S if t in m.T_minus)
             acq = m.w_L[g, t-1, s] if (t-1) in m.T_minus else 0
             if t <= LP_g[g]:
-                return m.x_L[g, t, s] == (m.x_L[g, t-1, s] + ONY_gts[g, t, s, 'L'] + ONU_gts[g, t, s, 'L'] + acq + rin - rout + tin - tout)
+                return m.x_L[g, t, s] == (m.x_L[g, t-1, s] + acq + rin - rout + tin - tout)
             else:
                 ret_index = t - LP_g[g] - 1
                 ret = m.w_L[g, ret_index, s] if ret_index in m.T_minus else 0
-                return m.x_L[g, t, s] == (m.x_L[g, t-1, s] + ONY_gts[g, t, s, 'L'] + ONU_gts[g, t, s, 'L'] + acq - ret + rin - rout + tin - tout)
+                return m.x_L[g, t, s] == (m.x_L[g, t-1, s] + acq - ret + rin - rout + tin - tout)
         model.c_stockL = Constraint(model.G, model.T, model.S, rule=stock_L)
         
         model.c_cap = Constraint(model.G, model.T_minus, model.S, rule=lambda m, g, t, s:
@@ -416,123 +439,141 @@ def run_linear_algorithm(filename, time_limit):
         opt = SolverFactory('gurobi')
         opt.options['TimeLimit'] = time_limit
         opt.options['MIPGap'] = 0.00
-        res = opt.solve(model)
+        res = opt.solve(model, tee=True)
         
-        return value(model.obj)
-    except Exception as e:
-        print(f"Linear Solver Error: {e}")
-        return 0
+        obj_val = value(model.obj) if res.solver.termination_condition == TerminationCondition.optimal else 0
+        
+        gap_str = "N/A"
+        try:
+            lb = res.problem.lower_bound
+            ub = res.problem.upper_bound
+            if ub == float('inf') or ub == float('-inf'):
+                 gap_str = "Inf"
+            else:
+                 if abs(lb) > 1e-6:
+                     gap_val = abs(ub - lb) / abs(lb)
+                     gap_str = f"{gap_val*100:.2f}%"
+                 else:
+                     gap_str = "0.00%"
+        except:
+             gap_str = "Unknown"
 
-def run_greedy_algorithm(data, evaluator_lp):
-    random.seed(42)
-    # Pure Greedy (0% randomness) as benchmark
-    price = generate_randomized_greedy(data, randomness=0)
-    obj, _, _ = evaluator_lp.solve_for_pricing(price)
-    return obj
+        return obj_val, gap_str
+
+    except Exception as e:
+        print(f"Linear Solver Failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return 0, "Error"
 
 # ==============================================================================
 # MAIN BATCH RUNNER
 # ==============================================================================
 if __name__ == "__main__":
     
-    OUTPUT_FILE = "Final_Benchmark_Results.csv"
-    SA_MAX_SECONDS = 120 
+    files = []
+    # files += [f"data/Inst_Sim_{i}.xlsx" for i in range(1, 6)]
+    # files += [f"data/Inst_Double_{i}.xlsx" for i in range(1, 6)]
+    # files += [f"data/Inst_Quad_{i}.xlsx" for i in range(1, 3)]
     
-    headers = ["Instance", 
-               "Constructive_Worse_Obj", 
-               "SA_Final_Obj", "SA_Iters", "SA_Time", 
-               "LS_Final_Obj", 
-               "Linear_Obj", "Linear_TimeLimit", 
-               "Greedy_Obj"]
+    files += [f"data/Inst{i}.xlsx" for i in range(1, 41)]
     
-    if not os.path.exists(OUTPUT_FILE):
-        with open(OUTPUT_FILE, 'w', newline='') as f:
-            writer = csv.writer(f)
-            writer.writerow(headers)
+    OUTPUT_FILE = "Batch_Results_Full.xlsx"
+    results = []
+    completed_files = set()
 
-    print("STARTING BENCHMARK (Constructive -> SA -> LS -> Linear -> Greedy)")
-    print("-" * 65)
-    
-    for i in range(1, 41):
-        instance_name = f"Inst{i}.xlsx"
-        filename = os.path.join("data", instance_name)
-        
+    if os.path.exists(OUTPUT_FILE):
+        try:
+            print(f"Found existing results in {OUTPUT_FILE}. Reading...")
+            existing_df = pd.read_excel(OUTPUT_FILE)
+            results = existing_df.to_dict('records')
+            
+            if 'Linear_Gap' in existing_df.columns:
+                completed_files = set(
+                    existing_df[existing_df['Linear_Gap'].notna()]['Instance'].astype(str).tolist()
+                )
+                print(f"-> Resuming. Identified {len(completed_files)} completed instances.")
+        except Exception as e:
+            print(f"Warning: Could not read existing file ({e}). Starting fresh.")
+
+    print(f"\n--- Starting FULL Batch Solve ({len(files)} files) ---")
+    print("Algorithm: SA (60s or until stagnation) + LS + Greedy + Linear (300s)")
+
+    for filename in files:
         if not os.path.exists(filename):
-            print(f"Skipping {instance_name} (Not Found)")
+            print(f"Skipping {filename} (File Not Found)")
             continue
             
-        print(f"\nProcessing {instance_name}...")
+        if filename in completed_files:
+            print(f"Skipping {filename} (Already Completed)")
+            continue
+
+        print(f"\nProcessing: {filename}")
         
-        # Define vars outside try block for safer cleanup
-        eval_lp = None
         data = None
+        eval_lp = None
         
         try:
+            # --- SETUP ---
             data = InstanceData(filename)
             eval_lp = PersistentEvaluator(data, is_relaxed=True)
             
-            # 1. Generate the Bad Starting Solution ONCE
+            # --- 1. CONSTRUCTIVE & GREEDY ---
+            random.seed(42) 
+            start_price = generate_randomized_greedy(data, randomness=0.30)
+            start_obj, _, _ = eval_lp.solve_for_pricing(start_price)
+            
             random.seed(42)
-            bad_start_price = generate_randomized_greedy(data, randomness=0.30)
-            bad_start_obj, _, _ = eval_lp.solve_for_pricing(bad_start_price)
-            print(f"  > Constructive (Worse) Start: {bad_start_obj:,.0f}")
+            greedy_price = generate_randomized_greedy(data, randomness=0.0)
+            greedy_obj, _, _ = eval_lp.solve_for_pricing(greedy_price)
+            
+            print(f"  > Start Obj: {start_obj:,.0f} | Greedy Obj: {greedy_obj:,.0f}")
 
-            # 2. Pass that specific bad start to SA
-            print(f"  > Running SA (Limit: {SA_MAX_SECONDS}s)...")
-            sa_obj, sa_iters, sa_time = run_sa_algorithm(data, eval_lp, bad_start_price, max_seconds=SA_MAX_SECONDS)
-            print(f"    SA Done: Final={sa_obj:,.0f} | Iters={sa_iters} | Time={sa_time:.2f}s")
+            # --- 2. SIMULATED ANNEALING ---
+            print("  > Running SA (60s or stagnant)...")
+            sa_obj, sa_iters, sa_time = run_sa_algorithm(
+                data, eval_lp, start_price, max_seconds=60
+            )
+            print(f"  > SA Finished: {sa_obj:,.0f} (Iter: {sa_iters})")
+
+            # --- 3. LOCAL SEARCH ---
+            print(f"  > Running LS ({sa_iters} iters)...")
+            ls_obj = run_ls_algorithm(
+                data, eval_lp, start_price, max_iters=int(sa_iters)
+            )
+            print(f"  > LS Finished: {ls_obj:,.0f}")
+
+            # --- 4. LINEAR SOLVER (WITH GAP) ---
+            print("  > Running Linear Solver (300s)...")
+            lin_obj, lin_gap = run_linear_with_gap(data, time_limit=300)
+            print(f"  > Linear Finished: {lin_obj:,.0f} | Gap: {lin_gap}")
+
+            # Collect results
+            result = {
+                'Instance': filename,
+                'Start_Obj': start_obj,
+                'Greedy_Obj': greedy_obj,
+                'SA_Obj': sa_obj,
+                'SA_Iters': sa_iters,
+                'SA_Time': sa_time,
+                'LS_Obj': ls_obj,
+                'Linear_Obj': lin_obj,
+                'Linear_Gap': lin_gap
+            }
+            results.append(result)
             
-            # 3. Pass that specific bad start to LS
-            print(f"  > Running LS (Limit: {sa_iters} iters)...")
-            ls_obj = run_ls_algorithm(data, eval_lp, bad_start_price, max_iters=sa_iters)
-            print(f"    LS Done: Final={ls_obj:,.0f}")
-            
-            # 4. Linear Benchmark
-            lin_time = max(1, sa_time) 
-            print(f"  > Running Linear MIP (Limit: {lin_time:.2f}s)...")
-            lin_obj = run_linear_algorithm(filename, time_limit=lin_time)
-            print(f"    Linear Done: Profit={lin_obj:,.0f}")
-            
-            # 5. Greedy Benchmark
-            print(f"  > Running Greedy (Benchmark)...")
-            greedy_obj = run_greedy_algorithm(data, eval_lp)
-            print(f"    Greedy Done: Profit={greedy_obj:,.0f}")
-            
-            row = [instance_name, 
-                   bad_start_obj, 
-                   sa_obj, sa_iters, sa_time, 
-                   ls_obj, 
-                   lin_obj, lin_time, 
-                   greedy_obj]
-            
-            # --- SAVE ---
-            saved = False
-            while not saved:
-                try:
-                    with open(OUTPUT_FILE, 'a', newline='') as f:
-                        writer = csv.writer(f)
-                        writer.writerow(row)
-                    saved = True
-                    print(f"  >>> Results saved to {OUTPUT_FILE}")
-                except PermissionError:
-                    print(f"  [!] FILE LOCKED: {OUTPUT_FILE} is open. Close it!")
-                    time.sleep(5)
+            # Save immediately
+            pd.DataFrame(results).to_excel(OUTPUT_FILE, index=False)
+            print(f"  > Saved to {OUTPUT_FILE}")
 
         except Exception as e:
-            print(f"  ERROR processing {instance_name}: {e}")
+            print(f"  > FAILED {filename}: {e}")
+            results.append({'Instance': filename, 'Error': str(e)})
+            pd.DataFrame(results).to_excel(OUTPUT_FILE, index=False)
         
         finally:
-            # --- CRITICAL CLEANUP ---
-            # Explicitly cleanup the solver to avoid Pyomo/GC concurrency errors
-            if eval_lp:
-                eval_lp.close()
-                del eval_lp
-            
-            if data:
-                del data
-                
-            # Force Garbage Collection before next iteration
+            if eval_lp: eval_lp.close(); del eval_lp
+            if data: del data
             gc.collect()
-            # ------------------------
 
-    print("\nBENCHMARK COMPLETE.")
+    print(f"\nBatch Run Complete. Results saved to {OUTPUT_FILE}")
