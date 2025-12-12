@@ -13,7 +13,7 @@ def generate_strict_instance(filename, S_count, scale_factor=1.0):
     
     # Exact Costs from Inst40
     COS_g = [5.00,  4.50,  4.00,  3.50,  3.00]
-    LEA_g = [1.50,  1.25,  1.00,  0.75,  0.50]
+    LEA_g = [100,  120,  150,  180,  0.50]
     OWN_g = [0.03, 0.025, 0.02, 0.015, 0.01]
     
     # Exact Prices from Inst40 (Excluding header row)

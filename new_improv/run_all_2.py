@@ -237,7 +237,7 @@ def run_sa_algorithm(data, evaluator_lp, initial_pricing, max_seconds=120):
     best_obj_lp = curr_obj
     best_price = copy.deepcopy(curr_price)
     
-    T = None; ALPHA = 0.99; aggressiveness = 0.2
+    T = None; ALPHA = 0.98; aggressiveness = 0.2
     start_time = time.time()
     total_iter = 0
     last_print = 0
@@ -251,7 +251,7 @@ def run_sa_algorithm(data, evaluator_lp, initial_pricing, max_seconds=120):
     
     print(f"\n  === SA STARTING ===")
     print(f"  Initial Obj: {curr_obj:,.2f} | Max Time: {max_seconds}s | Max Stagnant: {MAX_NO_IMPROVE}")
-    print(f"  {'Iter':<6} {'Elapsed':<8} {'Curr_Obj':<15} {'New_Obj':<15} {'Delta':<12} {'Temp':<10} {'Accept':<12} {'Best':<15} {'Stagnant':<9} {'Aggr':<6}")
+    print(f"  {'Iter':<6} {'Elapsed':<8} {'Curr_Obj':<15} {'New_Obj':<15} {'Delta':<12} {'Temp':<10} {'Accept':<12} {'Best':<15} {'Stagnant':<9} {'Prob':<8}")
     print(f"  {'-'*130}")
     
     while True:
@@ -279,6 +279,7 @@ def run_sa_algorithm(data, evaluator_lp, initial_pricing, max_seconds=120):
         if delta > 0: 
             accepted = True
             improvements += 1
+            prob = 1.0  # Always accepted
         else:
             if T is None:
                 base_T = delta / math.log(0.5) if delta < 0 else 0
@@ -307,9 +308,9 @@ def run_sa_algorithm(data, evaluator_lp, initial_pricing, max_seconds=120):
             no_improve_iters += 1 # Rejected move counts as no improvement
         
         # Print every iteration
-        accept_str = "NEW BEST!" if is_new_best else ("Accept" if accepted else f"Reject p={prob:.4f}")
+        accept_str = "NEW BEST!" if is_new_best else ("Accept" if accepted else "Reject")
         temp_str = f"{T:.2f}" if T is not None else "N/A"
-        print(f"  {total_iter:<6} {elapsed:<8.1f} {curr_obj:<15,.2f} {n_obj:<15,.2f} {delta:<12,.2f} {temp_str:<10} {accept_str:<12} {best_obj_lp:<15,.2f} {no_improve_iters:<9} {aggressiveness:<6.3f}")
+        print(f"  {total_iter:<6} {elapsed:<8.1f} {curr_obj:<15,.2f} {n_obj:<15,.2f} {delta:<12,.2f} {temp_str:<10} {accept_str:<12} {best_obj_lp:<15,.2f} {no_improve_iters:<9} {prob:<8.4f}")
         
         if T is not None: T = T * ALPHA
         if total_iter % 100 == 0: 
@@ -334,19 +335,33 @@ def run_sa_algorithm(data, evaluator_lp, initial_pricing, max_seconds=120):
     
     return best_obj_lp, total_iter, final_time
 
-def run_ls_algorithm(data, evaluator_lp, initial_pricing, max_iters):
+def run_ls_algorithm(data, evaluator_lp, initial_pricing, max_iters, max_time=None):
     curr_price = copy.deepcopy(initial_pricing)
     curr_obj, _, curr_sales = evaluator_lp.solve_for_pricing(curr_price)
     best_obj = curr_obj
     aggressiveness = 0.20
     improvements = 0
+    no_improve_iters = 0
+    MAX_NO_IMPROVE = 20
+    
+    start_time = time.time()
     
     print(f"\n  === LS STARTING ===")
-    print(f"  Initial Obj: {curr_obj:,.2f} | Max Iterations: {max_iters}")
-    print(f"  {'Iter':<6} {'Curr_Obj':<15} {'New_Obj':<15} {'Delta':<12} {'Status':<12} {'Best':<15} {'Improvements':<13} {'Aggr':<6}")
-    print(f"  {'-'*110}")
+    time_str = f" | Max Time: {max_time:.1f}s" if max_time else ""
+    print(f"  Initial Obj: {curr_obj:,.2f} | Max Iterations: {max_iters}{time_str} | Max Stagnant: {MAX_NO_IMPROVE}")
+    print(f"  {'Iter':<6} {'Elapsed':<8} {'Curr_Obj':<15} {'New_Obj':<15} {'Delta':<12} {'Status':<12} {'Best':<15} {'Stagnant':<9} {'Aggr':<6}")
+    print(f"  {'-'*120}")
     
     for i in range(max_iters):
+        elapsed = time.time() - start_time
+        if max_time and elapsed >= max_time:
+            print(f"\n  LS STOPPED: Time limit reached ({elapsed:.1f}s)")
+            break
+            
+        if no_improve_iters >= MAX_NO_IMPROVE:
+            print(f"\n  LS STOPPED: No improvement for {no_improve_iters} iterations.")
+            break
+            
         new_price, moved = saturation_guided_mutation(curr_price, curr_sales, data, aggressiveness)
         if not moved:
              r = random.randint(0, data.R - 1); a = random.randint(0, data.A)
@@ -362,21 +377,28 @@ def run_ls_algorithm(data, evaluator_lp, initial_pricing, max_iters):
             if curr_obj > best_obj:
                 best_obj = curr_obj
                 status = "IMPROVED!"
+                no_improve_iters = 0
             else:
                 status = "Better"
+                no_improve_iters += 1
         else:
             status = "Reject"
+            no_improve_iters += 1
         
         # Print every iteration
-        print(f"  {i+1:<6} {curr_obj:<15,.2f} {new_obj:<15,.2f} {delta:<12,.2f} {status:<12} {best_obj:<15,.2f} {improvements:<13} {aggressiveness:<6.3f}")
+        print(f"  {i+1:<6} {elapsed:<8.1f} {curr_obj:<15,.2f} {new_obj:<15,.2f} {delta:<12,.2f} {status:<12} {best_obj:<15,.2f} {no_improve_iters:<9} {aggressiveness:<6.3f}")
+    
+    final_time = time.time() - start_time
+    actual_iters = i + 1
     
     print(f"\n  === LS SUMMARY ===")
-    print(f"  Total Iterations: {max_iters}")
-    print(f"  Improvements: {improvements} ({100*improvements/max_iters:.1f}%)")
+    print(f"  Total Iterations: {actual_iters}")
+    print(f"  Total Time: {final_time:.2f}s")
+    print(f"  Improvements: {improvements} ({100*improvements/actual_iters:.1f}%)")
     print(f"  Final Best Obj: {best_obj:,.2f}")
-    print(f"  Gain from start: {best_obj - evaluator_lp.solve_for_pricing(initial_pricing)[0]:,.2f}")
+    print(f"  Gain from start: {best_obj - curr_obj:,.2f}")
             
-    return curr_obj
+    return best_obj, actual_iters, final_time
 
 def run_linear_with_gap(filename, time_limit):
     """
@@ -537,9 +559,9 @@ def run_linear_with_gap(filename, time_limit):
 if __name__ == "__main__":
     
     files = []
-    files += [f"data/Inst_Sim_{i}.xlsx" for i in range(1, 2)]
-    # files += [f"data/Inst_Double_{i}.xlsx" for i in range(1, 6)]
-    # files += [f"data/Inst_Quad_{i}.xlsx" for i in range(1, 3)]
+    files += [f"data/Inst_Sim_{i}.xlsx" for i in range(1, 6)]
+    files += [f"data/Inst_Double_{i}.xlsx" for i in range(1, 6)]
+    files += [f"data/Inst_Quad_{i}.xlsx" for i in range(1, 3)]
     
     # files += [f"data/Inst{i}.xlsx" for i in range(1, 41)]
     
@@ -553,16 +575,16 @@ if __name__ == "__main__":
             existing_df = pd.read_excel(OUTPUT_FILE)
             results = existing_df.to_dict('records')
             
-            if 'Linear_Gap' in existing_df.columns:
+            if 'LS_Obj' in existing_df.columns:
                 completed_files = set(
-                    existing_df[existing_df['Linear_Gap'].notna()]['Instance'].astype(str).tolist()
+                    existing_df[existing_df['LS_Obj'].notna()]['Instance'].astype(str).tolist()
                 )
                 print(f"-> Resuming. Identified {len(completed_files)} completed instances.")
         except Exception as e:
             print(f"Warning: Could not read existing file ({e}). Starting fresh.")
 
     print(f"\n--- Starting FULL Batch Solve ({len(files)} files) ---")
-    print("Algorithm: SA (600s or until stagnation) + LS + Greedy + Linear (300s)")
+    print("Algorithm: Greedy + SA (600s) + LS (same iterations/time as SA)")
 
     for filename in files:
         if not os.path.exists(filename):
@@ -583,47 +605,37 @@ if __name__ == "__main__":
             data = InstanceData(filename)
             eval_lp = PersistentEvaluator(data, is_relaxed=True)
             
-            # --- 1. CONSTRUCTIVE & GREEDY ---
+            # --- CONSTRUCTIVE & GREEDY ---
             random.seed(42) 
             start_price = generate_randomized_greedy(data, randomness=0.00)
             start_obj, _, _ = eval_lp.solve_for_pricing(start_price)
             
-            random.seed(42)
-            greedy_price = generate_randomized_greedy(data, randomness=0.0)
-            greedy_obj, _, _ = eval_lp.solve_for_pricing(greedy_price)
-            
-            print(f"  > Start Obj: {start_obj:,.0f} | Greedy Obj: {greedy_obj:,.0f}")
+            print(f"  > Start Obj: {start_obj:,.0f}")
 
-            # --- 2. SIMULATED ANNEALING ---
-            print("  > Running SA (60s or stagnant)...")
+            # --- SIMULATED ANNEALING ---
+            print("  > Running SA (600s or stagnant)...")
             sa_obj, sa_iters, sa_time = run_sa_algorithm(
                 data, eval_lp, start_price, max_seconds=600
             )
-            print(f"  > SA Finished: {sa_obj:,.0f} (Iter: {sa_iters})")
+            print(f"  > SA Finished: {sa_obj:,.0f} (Iter: {sa_iters}, Time: {sa_time:.1f}s)")
 
-            # --- 3. LOCAL SEARCH ---
-            print(f"  > Running LS ({sa_iters} iters)...")
-            ls_obj = run_ls_algorithm(
-                data, eval_lp, start_price, max_iters=int(sa_iters)
+            # --- LOCAL SEARCH ---
+            print(f"  > Running LS (max {sa_iters} iterations or {sa_time:.1f}s)...")
+            ls_obj, ls_iters, ls_time = run_ls_algorithm(
+                data, eval_lp, start_price, max_iters=sa_iters, max_time=sa_time
             )
-            print(f"  > LS Finished: {ls_obj:,.0f}")
-
-            # --- 4. LINEAR SOLVER (WITH GAP) ---
-            print("  > Running Linear Solver (300s)...")
-            lin_obj, lin_gap = run_linear_with_gap(data, time_limit=300)
-            print(f"  > Linear Finished: {lin_obj:,.0f} | Gap: {lin_gap}")
+            print(f"  > LS Finished: {ls_obj:,.0f} (Iter: {ls_iters}, Time: {ls_time:.1f}s)")
 
             # Collect results
             result = {
                 'Instance': filename,
                 'Start_Obj': start_obj,
-                'Greedy_Obj': greedy_obj,
                 'SA_Obj': sa_obj,
                 'SA_Iters': sa_iters,
                 'SA_Time': sa_time,
                 'LS_Obj': ls_obj,
-                'Linear_Obj': lin_obj,
-                'Linear_Gap': lin_gap
+                'LS_Iters': ls_iters,
+                'LS_Time': ls_time
             }
             results.append(result)
             

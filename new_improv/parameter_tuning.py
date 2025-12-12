@@ -19,7 +19,6 @@ def run_tuning_experiment():
     tuning_time_limit = 300 # 5 minutes
     
     # 2. Select stratified instances (2 from each quartile)
-    # Assuming files are named Inst1.xlsx, Inst2.xlsx...
     selected_indices = [5, 8, 15, 18, 25, 28, 35, 38]
     files = [f"data/Inst{i}.xlsx" for i in selected_indices]
     
@@ -44,19 +43,11 @@ def run_tuning_experiment():
         start_price = generate_randomized_greedy(data, randomness=0.30)
         start_obj, _, _ = eval_lp.solve_for_pricing(start_price)
         
-        # Best Known (Load from your known results if calculating gap, 
-        # otherwise just compare objective values)
-        # For this script, we'll just save the Objective Value.
         
         for alpha in tuning_alphas:
             print(f"  > Testing Alpha: {alpha} ...", end="", flush=True)
             
-            # Reset random seed for consistency across alphas if desired, 
-            # or leave random to test robustness. 
-            # Ideally, SA has internal randomness so we just run it.
-            
-            # RUN SA with specific Alpha
-            # Note: You need to update run_sa_algorithm to accept 'alpha' argument
+
             sa_obj, sa_iters, sa_time = run_sa_algorithm(
                 data, 
                 eval_lp, 
