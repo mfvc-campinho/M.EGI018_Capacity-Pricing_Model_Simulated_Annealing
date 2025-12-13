@@ -559,8 +559,8 @@ def run_linear_with_gap(filename, time_limit):
 if __name__ == "__main__":
     
     files = []
-    files += [f"data/Inst_Sim_{i}.xlsx" for i in range(1, 6)]
-    files += [f"data/Inst_Double_{i}.xlsx" for i in range(1, 6)]
+    # files += [f"data/Inst_Sim_{i}.xlsx" for i in range(1, 6)]
+    # files += [f"data/Inst_Double_{i}.xlsx" for i in range(3, 6)]
     files += [f"data/Inst_Quad_{i}.xlsx" for i in range(1, 3)]
     
     # files += [f"data/Inst{i}.xlsx" for i in range(1, 41)]
@@ -584,7 +584,7 @@ if __name__ == "__main__":
             print(f"Warning: Could not read existing file ({e}). Starting fresh.")
 
     print(f"\n--- Starting FULL Batch Solve ({len(files)} files) ---")
-    print("Algorithm: Greedy + SA (600s) + LS (same iterations/time as SA)")
+    print("Algorithm: Greedy + SA (1 hour) + LS (same iterations/time as SA)")
 
     for filename in files:
         if not os.path.exists(filename):
@@ -613,9 +613,9 @@ if __name__ == "__main__":
             print(f"  > Start Obj: {start_obj:,.0f}")
 
             # --- SIMULATED ANNEALING ---
-            print("  > Running SA (600s or stagnant)...")
+            print("  > Running SA (1 hour or stagnant)...")
             sa_obj, sa_iters, sa_time = run_sa_algorithm(
-                data, eval_lp, start_price, max_seconds=600
+                data, eval_lp, start_price, max_seconds=3600
             )
             print(f"  > SA Finished: {sa_obj:,.0f} (Iter: {sa_iters}, Time: {sa_time:.1f}s)")
 
