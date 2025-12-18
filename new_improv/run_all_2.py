@@ -559,13 +559,13 @@ def run_linear_with_gap(filename, time_limit):
 if __name__ == "__main__":
     
     files = []
-    # files += [f"data/Inst_Sim_{i}.xlsx" for i in range(1, 6)]
-    # files += [f"data/Inst_Double_{i}.xlsx" for i in range(3, 6)]
+    files += [f"data/Inst_Sim_{i}.xlsx" for i in range(1, 6)]
+    files += [f"data/Inst_Double_{i}.xlsx" for i in range(3, 6)]
     files += [f"data/Inst_Quad_{i}.xlsx" for i in range(1, 3)]
     
-    # files += [f"data/Inst{i}.xlsx" for i in range(1, 41)]
+    files += [f"data/Inst{i}.xlsx" for i in range(1, 41)]
     
-    OUTPUT_FILE = "Batch_Results_Full.xlsx"
+    OUTPUT_FILE = "TEMP_Results_Full.xlsx"
     results = []
     completed_files = set()
 
